@@ -187,6 +187,44 @@ function updateProjection(vw, vh) {
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 }
 
+
+// ---------- stabilisation ----------
+const STAB = Q.has('stab') ? +Q.get('stab') : 2;      // 0 = vypnuto, 1 = jen filtr, 2 = filtr + gravitace (výchozí)
+class OneEuro {                                         // adaptive low-pass: strong when still, light when moving
+  constructor(n, minCutoff, beta, dCutoff = 1) { this.n = n; this.mc = minCutoff; this.b = beta; this.dc = dCutoff; this.x = null; }
+  reset() { this.x = null; }
+  filter(v, tms) {
+    if (!this.x) { this.x = v.slice(); this.dx = v.map(() => 0); this.t = tms; return v.slice(); }
+    const dt = Math.max(1e-3, (tms - this.t) / 1000); this.t = tms;
+    const al = c => 1 / (1 + 1 / (2 * Math.PI * c * dt));
+    const ad = al(this.dc);
+    let sp = 0;
+    for (let i = 0; i < this.n; i++) { const d = (v[i] - this.x[i]) / dt; this.dx[i] += ad * (d - this.dx[i]); sp += this.dx[i] * this.dx[i]; }
+    const a = al(this.mc + this.b * Math.sqrt(sp));
+    for (let i = 0; i < this.n; i++) this.x[i] += a * (v[i] - this.x[i]);
+    return this.x.slice();
+  }
+}
+const fPos = new OneEuro(3, 0.9, 3.0), fRot = new OneEuro(4, 0.9, 2.0);
+// gravity from the accelerometer (Android Chrome: devicemotion, no permission needed)
+let grav = null, shake = 0, gravEvents = 0;
+addEventListener('devicemotion', e => {
+  const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+  const v = [a.x, a.y, a.z], m = Math.hypot(...v); if (!m) return;
+  gravEvents++;
+  shake = 0.9 * shake + 0.1 * Math.abs(m - 9.81);
+  grav = grav ? grav.map((g, i) => g + 0.12 * (v[i] - g)) : v;
+});
+// the axis mapping device -> camera depends on the screen rotation; pick the candidate that agrees with the markers
+const gScore = [0, 0, 0, 0]; let gN = 0;
+function upCandidates() {
+  if (!grav) return null;
+  const l = Math.hypot(...grav), [x, y, z] = grav.map(v => v / l);
+  return [[x, y], [y, -x], [-x, -y], [-y, x]].map(([sx, sy]) => [sx, -sy, -z]);   // cv camera: x right, y down, z forward
+}
+let sigM2 = 0, prevN = null;       // jitter of the marker-derived floor normal (rad^2, EMA)
+let gravW = 0, gravK = -1;
+
 // ---------- main loop ----------
 const proc = document.createElement('canvas');
 const pctx = proc.getContext('2d', { willReadFrequently: true });
@@ -218,7 +256,23 @@ function loop(t) {
   if (fSamples.length >= 9) { const s = [...fSamples].sort((a, b) => a - b); fUnits = s[s.length >> 1]; }
   if (det.length) {
     const f = (fOverride || fUnits) * Math.max(pw, ph);
-    const P = MarkerDetector.posePlane(obj, img, f, pw / 2, ph / 2);
+    let P = MarkerDetector.posePlane(obj, img, f, pw / 2, ph / 2);
+    if (P && STAB >= 2) {
+      const n = [P.R[0][2], P.R[1][2], P.R[2][2]];
+      if (prevN) { const c = Math.min(1, n[0] * prevN[0] + n[1] * prevN[1] + n[2] * prevN[2]); sigM2 = 0.9 * sigM2 + 0.1 * Math.acos(c) ** 2; }
+      prevN = prevN ? prevN.map((v, i) => v + 0.3 * (n[i] - v)) : n;
+      const C = upCandidates();
+      if (C) {
+        C.forEach((u, k) => { gScore[k] = 0.92 * gScore[k] + 0.08 * (u[0] * n[0] + u[1] * n[1] + u[2] * n[2]); }); gN++;
+        let k = 0; for (let i = 1; i < 4; i++) if (gScore[i] > gScore[k]) k = i;
+        gravK = (gN > 15 && gScore[k] > 0.93) ? k : -1;
+        if (gravK >= 0) {
+          const sg = (1.2 * Math.PI / 180) * (1 + 3 * shake);       // gravity accuracy, worse while shaking
+          gravW = Math.min(0.9, sigM2 / (sigM2 + sg * sg));
+          P = MarkerDetector.fuseUp(P, C[gravK], obj, img, f, pw / 2, ph / 2, gravW);
+        } else gravW = 0;
+      }
+    }
     if (P) {
       const R = P.R, tt = P.t;
       const Mcv = new THREE.Matrix4().set(R[0][0], R[0][1], R[0][2], tt[0], R[1][0], R[1][1], R[1][2], tt[1], R[2][0], R[2][1], R[2][2], tt[2], 0, 0, 0, 1);
@@ -226,9 +280,14 @@ function loop(t) {
       M.decompose(tmpPos, tmpQuat, tmpScale);
       const ids = det.map(m => m.id).sort().join(',');
       const fresh = t - lastSeen > CFG.hideAfterMs;
-      const al = ids === current ? 0.5 : 0.8;   // a newly seen marker set: follow quickly
-      if (fresh) { smoothPos.copy(tmpPos); smoothQuat.copy(tmpQuat); smoothScale.copy(tmpScale); }
-      else { smoothPos.lerp(tmpPos, al); smoothQuat.slerp(tmpQuat, al); smoothScale.lerp(tmpScale, al); }
+      if (fresh) { fPos.reset(); fRot.reset(); prevN = null; }
+      if (STAB >= 1) {
+        const p = fPos.filter([tmpPos.x, tmpPos.y, tmpPos.z], t);
+        let q = [tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w];
+        if (fRot.x && q[0] * fRot.x[0] + q[1] * fRot.x[1] + q[2] * fRot.x[2] + q[3] * fRot.x[3] < 0) q = q.map(v => -v);
+        q = fRot.filter(q, t);
+        smoothPos.set(p[0], p[1], p[2]); smoothQuat.set(q[0], q[1], q[2], q[3]).normalize(); smoothScale.copy(tmpScale);
+      } else { smoothPos.copy(tmpPos); smoothQuat.copy(tmpQuat); smoothScale.copy(tmpScale); }
       anchor.matrix.compose(smoothPos, smoothQuat, smoothScale);
       anchor.matrixWorldNeedsUpdate = true;
       anchor.visible = modelReady;
@@ -239,7 +298,7 @@ function loop(t) {
   frames++; if (t - fpsT > 1000) { fps = frames * 1000 / (t - fpsT); frames = 0; fpsT = t; }
   const seen = det.map(m => m.id).sort().join(', ');
   status.innerHTML = (anchor.visible ? (det.length > 1 ? 'Markery <b>' : 'Marker <b>') + (seen || current) + '</b>' : 'Hledám marker…') + (TEST ? ' · TEST' : '') +
-    (DEBUG ? `<br><small>video ${vw}×${vh} · zpracování ${pw}×${ph} · ${fps.toFixed(0)} fps · ohnisko ${(fOverride || fUnits).toFixed(2)} (${fSamples.length}) · okno ${innerWidth}×${innerHeight}</small>` : '');
+    (DEBUG ? `<br><small>video ${vw}×${vh} · zpracování ${pw}×${ph} · ${fps.toFixed(0)} fps · ohnisko ${(fOverride || fUnits).toFixed(2)} (${fSamples.length}) · okno ${innerWidth}×${innerHeight}<br>stabilizace ${STAB} · gravitace ${gravK >= 0 ? 'ano (k' + gravK + ', váha ' + gravW.toFixed(2) + ')' : (grav ? 'kalibruji' : 'není')} · chvění markeru ${(Math.sqrt(sigM2) * 180 / Math.PI).toFixed(2)}°</small>` : '');
 }
 
 // ---------- buttons ----------
@@ -261,7 +320,7 @@ document.addEventListener('fullscreenchange', () => {
 });
 addEventListener('resize', () => { lastW = 0; });
 if (!document.documentElement.requestFullscreen) btnFull.style.display = 'none';
-diag('verze 3 · 1 marker · ' + (SIZE * 100).toFixed(0) + ' cm' + (TEST ? ' · TEST' : ''));
+diag('verze 4 (stabilizace) · 1 marker · ' + (SIZE * 100).toFixed(0) + ' cm' + (TEST ? ' · TEST' : ''));
 </script>
 </body>
 </html>
