@@ -20,6 +20,11 @@
   #bar{width:min(320px,80vw);height:8px;background:#333;border-radius:4px;margin-top:14px;overflow:hidden}
   #bar i{display:block;height:100%;width:0;background:#7CFC9A}
   #load small{opacity:.7;margin-top:18px;max-width:420px}
+  /* AR.js: video z kamery musí ležet ZA průhlednou 3D scénou, v levém horním rohu */
+  video{position:absolute!important;top:0!important;left:0!important;z-index:-2!important}
+  a-scene,.a-canvas{background:transparent!important}
+  #diag{position:fixed;left:0;right:0;bottom:0;z-index:30;max-height:45vh;overflow:auto;margin:0;
+        padding:8px 10px;background:rgba(0,0,0,.75);color:#ffd54a;font:12px/1.35 monospace;white-space:pre-wrap;display:none}
 </style>
 </head>
 <body>
@@ -28,6 +33,7 @@
   <div id="bar"><i></i></div>
   <small>Povolte přístup ke kameře. Pak namiřte telefon na kterýkoli ze 4 markerů na podlaze a vitrína se objeví ve skutečné velikosti.</small>
 </div>
+<pre id="diag"></pre>
 <div id="ui">
   <div id="status">Hledám marker…</div>
   <button id="btnCheck" type="button">Kontrola</button>
@@ -53,6 +59,16 @@ const CONFIG = {
 const TEST = /[?&]test\b/.test(location.search);
 const SIZE = TEST ? CONFIG.testMarkerSize : CONFIG.markerSize;
 const S = SIZE / CONFIG.markerSize;   // měřítko celé scény (1 = skutečnost)
+// ---- diagnostika: ?debug v adrese (chyby se ukážou vždy) ----
+const DEBUG = /[?&]debug\b/.test(location.search);
+function diag(msg, isErr) {
+  const d = document.getElementById('diag'); if (!d) return;
+  if (DEBUG || isErr) d.style.display = 'block';
+  d.textContent += (isErr ? '⚠ ' : '· ') + msg + '\n';
+}
+window.addEventListener('error', e => diag('Chyba: ' + e.message + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''), true));
+window.addEventListener('unhandledrejection', e => diag('Chyba: ' + (e.reason && e.reason.message || e.reason), true));
+const _ce = console.error; console.error = function (...a) { diag('console: ' + a.join(' '), true); _ce.apply(console, a); };
 // pojistka: ?otoc=90 / 180 / 270 pootočí vitrínu vůči všem markerům (kdyby stála bokem/obráceně)
 const OTOC = +((location.search.match(/[?&]otoc=(-?\d+)/) || [])[1] || 0);
 </script>
@@ -86,6 +102,27 @@ const OTOC = +((location.search.match(/[?&]otoc=(-?\d+)/) || [])[1] || 0);
     el.dataset.mid = m.id;
     scene.insertBefore(el, scene.querySelector('[camera]'));
   }
+
+  scene.addEventListener('loaded', () => {
+    try { scene.renderer.setClearColor(0x000000, 0); } catch (e) {}
+    diag('scéna načtena, okno ' + innerWidth + '×' + innerHeight);
+  });
+  window.addEventListener('camera-init', () => diag('kamera spuštěna'));
+  window.addEventListener('camera-error', e => diag('kamera: chyba ' + JSON.stringify(e.detail || ''), true));
+  window.addEventListener('arjs-video-loaded', () => {
+    const v = document.querySelector('video');
+    diag('video ' + (v ? v.videoWidth + '×' + v.videoHeight : '?'));
+  });
+  for (const m of CONFIG.markers) {
+    fetch('markers/marker' + m.id + '.patt').then(r => r.text().then(t =>
+      diag('marker' + m.id + '.patt: HTTP ' + r.status + ', ' + t.trim().split(/\s+/).length + ' čísel', !r.ok)))
+      .catch(e => diag('marker' + m.id + '.patt: ' + e.message, true));
+  }
+  if (DEBUG) setInterval(() => {
+    const ms = [...document.querySelectorAll('a-marker')].map(m => m.dataset.mid + (m.object3D.visible ? '✓' : '–')).join(' ');
+    const c = scene.canvas, v = document.querySelector('video');
+    document.getElementById('status').textContent = 'markery ' + ms + (c ? ' | canvas ' + c.clientWidth + '×' + c.clientHeight : '') + (v ? ' | video ' + v.clientWidth + '×' + v.clientHeight : '');
+  }, 500);
 
   // ---- offset matrix: marker frame -> model frame ----
   function offsetFor(m) {
