@@ -61,7 +61,7 @@ window.CONFIG = {
   focalDefault: 0.75         // ohnisko jako násobek delší strany obrazu (doladí se samo)
 };
 </script>
-<script src="detector.js"></script>
+<script src="detector.js?v=4"></script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -257,7 +257,7 @@ function loop(t) {
   if (det.length) {
     const f = (fOverride || fUnits) * Math.max(pw, ph);
     let P = MarkerDetector.posePlane(obj, img, f, pw / 2, ph / 2);
-    if (P && STAB >= 2) {
+    if (P && STAB >= 2 && MarkerDetector.fuseUp) {
       const n = [P.R[0][2], P.R[1][2], P.R[2][2]];
       if (prevN) { const c = Math.min(1, n[0] * prevN[0] + n[1] * prevN[1] + n[2] * prevN[2]); sigM2 = 0.9 * sigM2 + 0.1 * Math.acos(c) ** 2; }
       prevN = prevN ? prevN.map((v, i) => v + 0.3 * (n[i] - v)) : n;
@@ -320,6 +320,7 @@ document.addEventListener('fullscreenchange', () => {
 });
 addEventListener('resize', () => { lastW = 0; });
 if (!document.documentElement.requestFullscreen) btnFull.style.display = 'none';
+if (!MarkerDetector.fuseUp) diag('detector.js je stará verze – nahrajte nový soubor na GitHub', true);
 diag('verze 4 (stabilizace) · 1 marker · ' + (SIZE * 100).toFixed(0) + ' cm' + (TEST ? ' · TEST' : ''));
 </script>
 </body>
