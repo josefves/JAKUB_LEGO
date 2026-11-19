@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Vitrína – AR</title>
+<script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;font:15px/1.4 system-ui,sans-serif}
+  #ui{position:fixed;left:0;right:0;top:0;z-index:10;display:flex;gap:8px;align-items:center;
+      padding:10px 12px;background:rgba(0,0,0,.55);color:#fff}
+  #status{flex:1}
+  #status b{color:#7CFC9A}
+  button{font:inherit;color:#fff;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.4);
+         border-radius:8px;padding:8px 12px;min-height:40px}
+  button.on{background:#2a7;border-color:#2a7}
+  #load{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;
+        background:#111;color:#eee;text-align:center;padding:24px}
+  #bar{width:min(320px,80vw);height:8px;background:#333;border-radius:4px;margin-top:14px;overflow:hidden}
+  #bar i{display:block;height:100%;width:0;background:#7CFC9A}
+  #load small{opacity:.7;margin-top:18px;max-width:420px}
+</style>
+</head>
+<body>
+<div id="load">
+  <div id="loadtxt">Načítám model vitríny…</div>
+  <div id="bar"><i></i></div>
+  <small>Povolte přístup ke kameře. Pak namiřte telefon na kterýkoli ze 4 markerů na podlaze a vitrína se objeví ve skutečné velikosti.</small>
+</div>
+<div id="ui">
+  <div id="status">Hledám marker…</div>
+  <button id="btnCheck" type="button">Kontrola</button>
+</div>
+
+<script>
+// ===================== NASTAVENÍ =====================
+// Souřadnice v metrech, počátek = střed půdorysu vitríny na podlaze.
+// Osa X = dlouhá strana vitríny (věž kostela je na straně -X), osa Z = krátká strana.
+// "dir" = směr, kterým míří horní okraj markeru (nápis „▲ MARKER n ▲“) – vždy k vitríně.
+const CONFIG = {
+  markerSize: 0.50,          // šířka ČERNÉHO čtverce v m (tisk 60×60 cm)
+  testMarkerSize: 0.16,      // testovací tisk na A4 (?test v adrese) – vše se zmenší ve stejném poměru
+  markers: [
+    { id: 1, x:  0.00, z:  0.91, dir: [ 0, -1] },  // dlouhá strana, věž vlevo
+    { id: 2, x:  1.26, z:  0.00, dir: [-1,  0] },  // čelo bez věže
+    { id: 3, x:  0.00, z: -0.91, dir: [ 0,  1] },  // dlouhá strana, věž vpravo
+    { id: 4, x: -1.26, z:  0.00, dir: [ 1,  0] },  // čelo u věže
+  ],
+  hideAfterMs: 400           // jak dlouho model zůstane po ztrátě markeru
+};
+// ======================================================
+const TEST = /[?&]test\b/.test(location.search);
+const SIZE = TEST ? CONFIG.testMarkerSize : CONFIG.markerSize;
+const S = SIZE / CONFIG.markerSize;   // měřítko celé scény (1 = skutečnost)
+// pojistka: ?otoc=90 / 180 / 270 pootočí vitrínu vůči všem markerům (kdyby stála bokem/obráceně)
+const OTOC = +((location.search.match(/[?&]otoc=(-?\d+)/) || [])[1] || 0);
+</script>
+
+<a-scene embedded vr-mode-ui="enabled: false" loading-screen="enabled: false"
+  renderer="antialias: true; alpha: true; colorManagement: true; precision: mediump"
+  arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono; patternRatio: 0.5">
+  <a-entity light="type: hemisphere; color: #ffffff; groundColor: #8a8070; intensity: 1.0"></a-entity>
+  <a-entity light="type: directional; color: #ffffff; intensity: 0.8" position="0.5 2 1"></a-entity>
+  <a-entity id="anchor" multi-anchor>
+    <a-entity id="model"></a-entity>
+    <a-entity id="check" visible="false"></a-entity>
+  </a-entity>
+  <a-entity camera></a-entity>
+</a-scene>
+
+<script>
+{
+  // ---- markers (created from CONFIG) ----
+  const scene = document.querySelector('a-scene');
+  for (const m of CONFIG.markers) {
+    const el = document.createElement('a-marker');
+    el.setAttribute('type', 'pattern');
+    el.setAttribute('url', 'markers/marker' + m.id + '.patt');
+    el.setAttribute('size', SIZE);
+    el.setAttribute('smooth', 'true');
+    el.setAttribute('smoothCount', '8');
+    el.setAttribute('smoothTolerance', '0.01');
+    el.setAttribute('smoothThreshold', '4');
+    el.setAttribute('minConfidence', '0.6');
+    el.dataset.mid = m.id;
+    scene.insertBefore(el, scene.querySelector('[camera]'));
+  }
+
+  // ---- offset matrix: marker frame -> model frame ----
+  function offsetFor(m) {
+    const T = THREE;
+    const d = new T.Vector3(m.dir[0], 0, m.dir[1]).normalize()
+      .applyAxisAngle(new T.Vector3(0, 1, 0), OTOC * Math.PI / 180);
+    const Y = new T.Vector3(0, 1, 0);
+    const Z = d.clone().negate();                 // AR.js: -Z = horní okraj markeru
+    const X = new T.Vector3().crossVectors(Y, Z); // +X = pravý okraj markeru
+    const M = new T.Matrix4().makeBasis(X, Y, Z).setPosition(m.x * S, 0, m.z * S);
+    return M.invert().multiply(new T.Matrix4().makeScale(S, S, S));
+  }
+
+  AFRAME.registerComponent('multi-anchor', {
+    init() {
+      this.markers = [];
+      this.offsets = {};
+      this.current = null;
+      this.lastSeen = -1e9;
+      this.status = document.getElementById('status');
+      this.el.object3D.matrixAutoUpdate = false;
+      this.el.object3D.visible = false;
+      this.el.sceneEl.addEventListener('loaded', () => {
+        this.markers = [...document.querySelectorAll('a-marker')];
+        for (const m of CONFIG.markers) this.offsets[m.id] = offsetFor(m);
+      });
+    },
+    tick(t) {
+      if (!this.markers.length) return;
+      const vis = this.markers.filter(m => m.object3D.visible);
+      for (const m of vis) m.object3D.updateMatrix();   // AR.js sets position/quaternion; build the matrix now
+      let pick = null;
+      if (this.current && vis.includes(this.current)) pick = this.current;
+      else if (vis.length) {
+        const dist = m => m.object3D.position.length();
+        pick = vis.reduce((a, b) => dist(a) <= dist(b) ? a : b);
+      }
+      const o = this.el.object3D;
+      if (pick) {
+        this.current = pick; this.lastSeen = t;
+        o.matrix.multiplyMatrices(pick.object3D.matrix, this.offsets[pick.dataset.mid]);
+        o.matrixWorldNeedsUpdate = true;
+        o.visible = true;
+        this.status.innerHTML = 'Marker <b>' + pick.dataset.mid + '</b>' + (vis.length > 1 ? ' (vidím ' + vis.length + ')' : '') + (TEST ? ' · TEST' : '');
+      } else if (t - this.lastSeen > CONFIG.hideAfterMs) {
+        o.visible = false; this.current = null;
+        this.status.textContent = 'Hledám marker…' + (TEST ? ' · TEST' : '');
+      }
+    }
+  });
+
+  // ---- control outlines: printed sheets as seen by the app ----
+  const check = document.getElementById('check');
+  for (const m of CONFIG.markers) {
+    const a = Math.atan2(-m.dir[0], -m.dir[1]) * 180 / Math.PI;
+    const g = document.createElement('a-entity');
+    g.setAttribute('position', `${m.x} 0.002 ${m.z}`);
+    g.setAttribute('rotation', `0 ${a} 0`);
+    const s = CONFIG.markerSize;
+    g.innerHTML =
+      `<a-plane rotation="-90 0 0" width="${s}" height="${s}" material="color:#00e5ff; opacity:0.35; transparent:true; side:double"></a-plane>` +
+      `<a-plane rotation="-90 0 0" position="0 0.001 ${-s / 2 - 0.03}" width="0.06" height="0.06" material="color:#ff2d75; side:double"></a-plane>` +
+      `<a-text value="${m.id}" align="center" rotation="-90 0 0" position="0 0.003 0" width="3" color="#ff2d75"></a-text>`;
+    check.appendChild(g);
+  }
+  document.getElementById('btnCheck').addEventListener('click', e => {
+    const on = !check.getAttribute('visible');
+    check.setAttribute('visible', on);
+    e.currentTarget.classList.toggle('on', on);
+  });
+
+  // ---- model download with progress ----
+  const bar = document.querySelector('#bar i'), txt = document.getElementById('loadtxt');
+  (async () => {
+    try {
+      const res = await fetch('model.glb');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const total = +res.headers.get('content-length') || 0;
+      const reader = res.body.getReader(); const chunks = []; let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read(); if (done) break;
+        chunks.push(value); got += value.length;
+        if (total) { bar.style.width = (100 * got / total).toFixed(0) + '%'; txt.textContent = 'Načítám model vitríny… ' + (got / 1048576).toFixed(1) + ' / ' + (total / 1048576).toFixed(1) + ' MB'; }
+        else txt.textContent = 'Načítám model vitríny… ' + (got / 1048576).toFixed(1) + ' MB';
+      }
+      const url = URL.createObjectURL(new Blob(chunks, { type: 'model/gltf-binary' }));
+      const model = document.getElementById('model');
+      model.addEventListener('model-loaded', () => document.getElementById('load').remove());
+      model.addEventListener('model-error', () => { txt.textContent = 'Model se nepodařilo zobrazit.'; });
+      model.setAttribute('gltf-model', url);
+    } catch (err) {
+      txt.textContent = 'Model se nepodařilo stáhnout (' + err.message + '). Zkontrolujte připojení k internetu.';
+    }
+  })();
+}
+</script>
+</body>
+</html>
