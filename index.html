@@ -2,222 +2,270 @@
 <html lang="cs">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
 <title>Vitrína – AR</title>
-<script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;font:15px/1.4 system-ui,sans-serif}
-  #ui{position:fixed;left:0;right:0;top:0;z-index:10;display:flex;gap:8px;align-items:center;
-      padding:10px 12px;background:rgba(0,0,0,.55);color:#fff}
-  #status{flex:1}
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font:15px/1.4 system-ui,sans-serif;
+            touch-action:manipulation;-webkit-user-select:none;user-select:none}
+  #v,#gl{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh}
+  #v{object-fit:cover;z-index:0;background:#000}
+  #gl{z-index:1;display:block}
+  #ui{position:fixed;left:0;right:0;top:0;z-index:10;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+      padding:max(8px,env(safe-area-inset-top)) 10px 8px;background:linear-gradient(rgba(0,0,0,.6),rgba(0,0,0,0))}
+  #status{flex:1;min-width:120px;text-shadow:0 1px 2px #000}
   #status b{color:#7CFC9A}
-  button{font:inherit;color:#fff;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.4);
-         border-radius:8px;padding:8px 12px;min-height:40px}
-  button.on{background:#2a7;border-color:#2a7}
+  button{font:inherit;color:#fff;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.55);
+         border-radius:10px;padding:9px 13px;min-height:44px}
+  button.on{background:#1f8f5a;border-color:#1f8f5a}
   #load{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;
         background:#111;color:#eee;text-align:center;padding:24px}
   #bar{width:min(320px,80vw);height:8px;background:#333;border-radius:4px;margin-top:14px;overflow:hidden}
-  #bar i{display:block;height:100%;width:0;background:#7CFC9A}
-  #load small{opacity:.7;margin-top:18px;max-width:420px}
-  /* AR.js: video z kamery musí ležet ZA průhlednou 3D scénou, v levém horním rohu */
-  video{position:absolute!important;top:0!important;left:0!important;z-index:-2!important}
-  a-scene,.a-canvas{background:transparent!important}
-  #diag{position:fixed;left:0;right:0;bottom:0;z-index:30;max-height:45vh;overflow:auto;margin:0;
-        padding:8px 10px;background:rgba(0,0,0,.75);color:#ffd54a;font:12px/1.35 monospace;white-space:pre-wrap;display:none}
+  #bar i{display:block;height:100%;width:0;background:#7CFC9A;transition:width .2s}
+  #load small{opacity:.75;margin-top:18px;max-width:440px}
+  #go{margin-top:22px;font-size:17px;padding:12px 22px;background:#1f8f5a;border-color:#1f8f5a;display:none}
+  #diag{position:fixed;left:0;right:0;bottom:0;z-index:30;max-height:40vh;overflow:auto;margin:0;padding:8px 10px;
+        background:rgba(0,0,0,.72);color:#ffd54a;font:12px/1.35 monospace;white-space:pre-wrap;display:none}
 </style>
 </head>
 <body>
+<video id="v" playsinline muted autoplay></video>
+<canvas id="gl"></canvas>
+
 <div id="load">
   <div id="loadtxt">Načítám model vitríny…</div>
   <div id="bar"><i></i></div>
-  <small>Povolte přístup ke kameře. Pak namiřte telefon na kterýkoli ze 4 markerů na podlaze a vitrína se objeví ve skutečné velikosti.</small>
+  <button id="go" type="button">Spustit kameru</button>
+  <small>Pak namiřte telefon na kterýkoli ze 4 černých markerů na podlaze – vitrína se objeví ve skutečné velikosti.</small>
+</div>
+<div id="ui">
+  <div id="status">Spouštím…</div>
+  <button id="btnCheck" type="button">Kontrola</button>
+  <button id="btnFull" type="button">Celá obrazovka</button>
 </div>
 <pre id="diag"></pre>
-<div id="ui">
-  <div id="status">Hledám marker…</div>
-  <button id="btnCheck" type="button">Kontrola</button>
-</div>
 
 <script>
 // ===================== NASTAVENÍ =====================
 // Souřadnice v metrech, počátek = střed půdorysu vitríny na podlaze.
 // Osa X = dlouhá strana vitríny (věž kostela je na straně -X), osa Z = krátká strana.
-// "dir" = směr, kterým míří horní okraj markeru (nápis „▲ MARKER n ▲“) – vždy k vitríně.
-const CONFIG = {
+// "dir" = kam míří horní okraj markeru (nápis „▲ MARKER n ▲“) – vždy k vitríně.
+window.CONFIG = {
   markerSize: 0.50,          // šířka ČERNÉHO čtverce v m (tisk 60×60 cm)
-  testMarkerSize: 0.16,      // testovací tisk na A4 (?test v adrese) – vše se zmenší ve stejném poměru
+  testMarkerSize: 0.16,      // testovací tisk A4 (?test v adrese) – celá scéna se zmenší ve stejném poměru
   markers: [
     { id: 1, x:  0.00, z:  0.91, dir: [ 0, -1] },  // dlouhá strana, věž vlevo
     { id: 2, x:  1.26, z:  0.00, dir: [-1,  0] },  // čelo bez věže
     { id: 3, x:  0.00, z: -0.91, dir: [ 0,  1] },  // dlouhá strana, věž vpravo
     { id: 4, x: -1.26, z:  0.00, dir: [ 1,  0] },  // čelo u věže
   ],
-  hideAfterMs: 400           // jak dlouho model zůstane po ztrátě markeru
+  hideAfterMs: 400,          // jak dlouho model zůstane po ztrátě markeru
+  procLongSide: 960,         // rozlišení pro hledání markerů (menší = rychlejší, ?proc=640)
+  focalDefault: 0.75         // ohnisko jako násobek delší strany obrazu (doladí se samo)
 };
-// ======================================================
-const TEST = /[?&]test\b/.test(location.search);
-const SIZE = TEST ? CONFIG.testMarkerSize : CONFIG.markerSize;
-const S = SIZE / CONFIG.markerSize;   // měřítko celé scény (1 = skutečnost)
-// ---- diagnostika: ?debug v adrese (chyby se ukážou vždy) ----
-const DEBUG = /[?&]debug\b/.test(location.search);
-function diag(msg, isErr) {
-  const d = document.getElementById('diag'); if (!d) return;
-  if (DEBUG || isErr) d.style.display = 'block';
-  d.textContent += (isErr ? '⚠ ' : '· ') + msg + '\n';
-}
-window.addEventListener('error', e => diag('Chyba: ' + e.message + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''), true));
-window.addEventListener('unhandledrejection', e => diag('Chyba: ' + (e.reason && e.reason.message || e.reason), true));
-const _ce = console.error; console.error = function (...a) { diag('console: ' + a.join(' '), true); _ce.apply(console, a); };
-// pojistka: ?otoc=90 / 180 / 270 pootočí vitrínu vůči všem markerům (kdyby stála bokem/obráceně)
-const OTOC = +((location.search.match(/[?&]otoc=(-?\d+)/) || [])[1] || 0);
 </script>
+<script src="detector.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-<a-scene embedded vr-mode-ui="enabled: false" loading-screen="enabled: false"
-  renderer="antialias: true; alpha: true; colorManagement: true; precision: mediump"
-  arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono; patternRatio: 0.5">
-  <a-entity light="type: hemisphere; color: #ffffff; groundColor: #8a8070; intensity: 1.0"></a-entity>
-  <a-entity light="type: directional; color: #ffffff; intensity: 0.8" position="0.5 2 1"></a-entity>
-  <a-entity id="anchor" multi-anchor>
-    <a-entity id="model"></a-entity>
-    <a-entity id="check" visible="false"></a-entity>
-  </a-entity>
-  <a-entity camera></a-entity>
-</a-scene>
+const CFG = window.CONFIG;
+const Q = new URLSearchParams(location.search);
+const TEST = Q.has('test'), DEBUG = Q.has('debug');
+const OTOC = +(Q.get('otoc') || 0);
+const SIZE = TEST ? CFG.testMarkerSize : CFG.markerSize;
+const S = SIZE / CFG.markerSize;
+const $ = id => document.getElementById(id);
+const diagEl = $('diag');
+function diag(msg, err) { if (DEBUG || err) diagEl.style.display = 'block'; diagEl.textContent += (err ? '⚠ ' : '· ') + msg + '\n'; }
+window.addEventListener('error', e => diag('Chyba: ' + e.message, true));
+window.addEventListener('unhandledrejection', e => diag('Chyba: ' + (e.reason && e.reason.message || e.reason), true));
 
-<script>
-{
-  // ---- markers (created from CONFIG) ----
-  const scene = document.querySelector('a-scene');
-  for (const m of CONFIG.markers) {
-    const el = document.createElement('a-marker');
-    el.setAttribute('type', 'pattern');
-    el.setAttribute('url', 'markers/marker' + m.id + '.patt');
-    el.setAttribute('size', SIZE);
-    el.setAttribute('smooth', 'true');
-    el.setAttribute('smoothCount', '8');
-    el.setAttribute('smoothTolerance', '0.01');
-    el.setAttribute('smoothThreshold', '4');
-    el.setAttribute('minConfidence', '0.6');
-    el.dataset.mid = m.id;
-    scene.insertBefore(el, scene.querySelector('[camera]'));
-  }
+// ---------- three.js ----------
+const canvas = $('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+renderer.setClearColor(0x000000, 0);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.Camera();               // identity pose; projection set from the camera intrinsics
+const anchor = new THREE.Group();                // model space (metres, Y up)
+anchor.matrixAutoUpdate = false; anchor.visible = false;
+scene.add(anchor);
+const content = new THREE.Group(); anchor.add(content);
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8070, 1.6); hemi.position.set(0, 1, 0); content.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(1.5, 3, 2); content.add(sun);
 
-  scene.addEventListener('loaded', () => {
-    try { scene.renderer.setClearColor(0x000000, 0); } catch (e) {}
-    diag('scéna načtena, okno ' + innerWidth + '×' + innerHeight);
-  });
-  window.addEventListener('camera-init', () => diag('kamera spuštěna'));
-  window.addEventListener('camera-error', e => diag('kamera: chyba ' + JSON.stringify(e.detail || ''), true));
-  window.addEventListener('arjs-video-loaded', () => {
-    const v = document.querySelector('video');
-    diag('video ' + (v ? v.videoWidth + '×' + v.videoHeight : '?'));
-  });
-  for (const m of CONFIG.markers) {
-    fetch('markers/marker' + m.id + '.patt').then(r => r.text().then(t =>
-      diag('marker' + m.id + '.patt: HTTP ' + r.status + ', ' + t.trim().split(/\s+/).length + ' čísel', !r.ok)))
-      .catch(e => diag('marker' + m.id + '.patt: ' + e.message, true));
-  }
-  if (DEBUG) setInterval(() => {
-    const ms = [...document.querySelectorAll('a-marker')].map(m => m.dataset.mid + (m.object3D.visible ? '✓' : '–')).join(' ');
-    const c = scene.canvas, v = document.querySelector('video');
-    document.getElementById('status').textContent = 'markery ' + ms + (c ? ' | canvas ' + c.clientWidth + '×' + c.clientHeight : '') + (v ? ' | video ' + v.clientWidth + '×' + v.clientHeight : '');
-  }, 500);
-
-  // ---- offset matrix: marker frame -> model frame ----
-  function offsetFor(m) {
-    const T = THREE;
-    const d = new T.Vector3(m.dir[0], 0, m.dir[1]).normalize()
-      .applyAxisAngle(new T.Vector3(0, 1, 0), OTOC * Math.PI / 180);
-    const Y = new T.Vector3(0, 1, 0);
-    const Z = d.clone().negate();                 // AR.js: -Z = horní okraj markeru
-    const X = new T.Vector3().crossVectors(Y, Z); // +X = pravý okraj markeru
-    const M = new T.Matrix4().makeBasis(X, Y, Z).setPosition(m.x * S, 0, m.z * S);
-    return M.invert().multiply(new T.Matrix4().makeScale(S, S, S));
-  }
-
-  AFRAME.registerComponent('multi-anchor', {
-    init() {
-      this.markers = [];
-      this.offsets = {};
-      this.current = null;
-      this.lastSeen = -1e9;
-      this.status = document.getElementById('status');
-      this.el.object3D.matrixAutoUpdate = false;
-      this.el.object3D.visible = false;
-      this.el.sceneEl.addEventListener('loaded', () => {
-        this.markers = [...document.querySelectorAll('a-marker')];
-        for (const m of CONFIG.markers) this.offsets[m.id] = offsetFor(m);
-      });
-    },
-    tick(t) {
-      if (!this.markers.length) return;
-      const vis = this.markers.filter(m => m.object3D.visible);
-      for (const m of vis) m.object3D.updateMatrix();   // AR.js sets position/quaternion; build the matrix now
-      let pick = null;
-      if (this.current && vis.includes(this.current)) pick = this.current;
-      else if (vis.length) {
-        const dist = m => m.object3D.position.length();
-        pick = vis.reduce((a, b) => dist(a) <= dist(b) ? a : b);
-      }
-      const o = this.el.object3D;
-      if (pick) {
-        this.current = pick; this.lastSeen = t;
-        o.matrix.multiplyMatrices(pick.object3D.matrix, this.offsets[pick.dataset.mid]);
-        o.matrixWorldNeedsUpdate = true;
-        o.visible = true;
-        this.status.innerHTML = 'Marker <b>' + pick.dataset.mid + '</b>' + (vis.length > 1 ? ' (vidím ' + vis.length + ')' : '') + (TEST ? ' · TEST' : '');
-      } else if (t - this.lastSeen > CONFIG.hideAfterMs) {
-        o.visible = false; this.current = null;
-        this.status.textContent = 'Hledám marker…' + (TEST ? ' · TEST' : '');
-      }
-    }
-  });
-
-  // ---- control outlines: printed sheets as seen by the app ----
-  const check = document.getElementById('check');
-  for (const m of CONFIG.markers) {
-    const a = Math.atan2(-m.dir[0], -m.dir[1]) * 180 / Math.PI;
-    const g = document.createElement('a-entity');
-    g.setAttribute('position', `${m.x} 0.002 ${m.z}`);
-    g.setAttribute('rotation', `0 ${a} 0`);
-    const s = CONFIG.markerSize;
-    g.innerHTML =
-      `<a-plane rotation="-90 0 0" width="${s}" height="${s}" material="color:#00e5ff; opacity:0.35; transparent:true; side:double"></a-plane>` +
-      `<a-plane rotation="-90 0 0" position="0 0.001 ${-s / 2 - 0.03}" width="0.06" height="0.06" material="color:#ff2d75; side:double"></a-plane>` +
-      `<a-text value="${m.id}" align="center" rotation="-90 0 0" position="0 0.003 0" width="3" color="#ff2d75"></a-text>`;
-    check.appendChild(g);
-  }
-  document.getElementById('btnCheck').addEventListener('click', e => {
-    const on = !check.getAttribute('visible');
-    check.setAttribute('visible', on);
-    e.currentTarget.classList.toggle('on', on);
-  });
-
-  // ---- model download with progress ----
-  const bar = document.querySelector('#bar i'), txt = document.getElementById('loadtxt');
-  (async () => {
-    try {
-      const res = await fetch('model.glb');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const total = +res.headers.get('content-length') || 0;
-      const reader = res.body.getReader(); const chunks = []; let got = 0;
-      for (;;) {
-        const { done, value } = await reader.read(); if (done) break;
-        chunks.push(value); got += value.length;
-        if (total) { bar.style.width = (100 * got / total).toFixed(0) + '%'; txt.textContent = 'Načítám model vitríny… ' + (got / 1048576).toFixed(1) + ' / ' + (total / 1048576).toFixed(1) + ' MB'; }
-        else txt.textContent = 'Načítám model vitríny… ' + (got / 1048576).toFixed(1) + ' MB';
-      }
-      const url = URL.createObjectURL(new Blob(chunks, { type: 'model/gltf-binary' }));
-      const model = document.getElementById('model');
-      model.addEventListener('model-loaded', () => document.getElementById('load').remove());
-      model.addEventListener('model-error', () => { txt.textContent = 'Model se nepodařilo zobrazit.'; });
-      model.setAttribute('gltf-model', url);
-    } catch (err) {
-      txt.textContent = 'Model se nepodařilo stáhnout (' + err.message + '). Zkontrolujte připojení k internetu.';
-    }
-  })();
+// control outlines of the printed sheets (in model space)
+const check = new THREE.Group(); check.visible = false; content.add(check);
+for (const m of CFG.markers) {
+  const g = new THREE.Group();
+  g.position.set(m.x, 0.002, m.z);
+  g.rotation.y = Math.atan2(-m.dir[0], -m.dir[1]) + OTOC * Math.PI / 180;
+  const s = CFG.markerSize;
+  const sq = new THREE.Mesh(new THREE.PlaneGeometry(s, s), new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
+  sq.rotation.x = -Math.PI / 2; g.add(sq);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.04, 20), new THREE.MeshBasicMaterial({ color: 0xff2d75, side: THREE.DoubleSide }));
+  dot.rotation.x = -Math.PI / 2; dot.position.set(0, 0.003, -s / 2 + 0.06); g.add(dot);
+  check.add(g);
 }
+
+// offset: marker frame -> model frame. Marker frame: X = right edge, Y = towards label edge, Z = up (out of paper)
+function offsetFor(m) {
+  const d = new THREE.Vector3(m.dir[0], 0, m.dir[1]).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), OTOC * Math.PI / 180);
+  const up = new THREE.Vector3(0, 1, 0);
+  const right = new THREE.Vector3().crossVectors(d, up);
+  const T = new THREE.Matrix4().makeBasis(right, d, up).setPosition(m.x * S, 0, m.z * S);
+  return T.invert().multiply(new THREE.Matrix4().makeScale(S, S, S));
+}
+const OFF = {}; for (const m of CFG.markers) OFF[m.id] = offsetFor(m);
+// marker corners (TL, TR, BR, BL) in floor-plane coords (X = model x, Y = -model z), real metres (scaled in test mode)
+const FLOOR = {};
+for (const m of CFG.markers) {
+  const d = new THREE.Vector3(m.dir[0], 0, m.dir[1]).normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), OTOC * Math.PI / 180);
+  const right = new THREE.Vector3().crossVectors(d, new THREE.Vector3(0, 1, 0));
+  const c = new THREE.Vector3(m.x * S, 0, m.z * S), h = SIZE / 2;
+  FLOOR[m.id] = [[-h, h], [h, h], [h, -h], [-h, -h]].map(([X, Y]) => {
+    const p = c.clone().addScaledVector(right, X).addScaledVector(d, Y); return [p.x, -p.z]; });
+}
+
+
+const CV2GL = new THREE.Matrix4().makeScale(1, -1, -1);
+const MODEL2FLOOR = new THREE.Matrix4().set(1, 0, 0, 0,  0, 0, -1, 0,  0, 1, 0, 0,  0, 0, 0, 1).multiply(new THREE.Matrix4().makeScale(S, S, S));
+
+// ---------- model ----------
+const loader = new GLTFLoader();
+let modelReady = false;
+loader.load('model.glb', g => {
+  content.add(g.scene); modelReady = true;
+  $('loadtxt').textContent = 'Model je připraven.'; $('bar').firstChild.style.width = '100%';
+  startCamera();
+}, e => {
+  if (e.total) { $('bar').firstChild.style.width = (100 * e.loaded / e.total).toFixed(0) + '%';
+    $('loadtxt').textContent = 'Načítám model vitríny… ' + (e.loaded / 1048576).toFixed(1) + ' / ' + (e.total / 1048576).toFixed(1) + ' MB'; }
+}, err => { $('loadtxt').textContent = 'Model se nepodařilo načíst: ' + (err.message || err); diag('model: ' + (err.message || err), true); });
+
+// ---------- camera ----------
+const video = $('v');
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    video.srcObject = stream;
+    await video.play();
+    $('load').remove();
+    diag('kamera ' + video.videoWidth + '×' + video.videoHeight);
+    requestAnimationFrame(loop);
+  } catch (e) {
+    $('loadtxt').textContent = 'Klepněte na tlačítko a povolte přístup ke kameře.';
+    const b = $('go'); b.style.display = 'inline-block'; b.onclick = () => { b.style.display = 'none'; startCamera(); };
+    diag('kamera: ' + e.message, true);
+  }
+}
+
+// ---------- projection from intrinsics, honouring object-fit: cover ----------
+let fUnits = CFG.focalDefault;            // focal / long side of the video
+const fSamples = [];
+const fOverride = Q.has('f') ? +Q.get('f') : 0;
+let lastW = 0, lastH = 0, lastVW = 0, lastVH = 0, lastF = 0;
+function updateProjection(vw, vh) {
+  const W = innerWidth, H = innerHeight;
+  const f = (fOverride || fUnits) * Math.max(vw, vh);
+  if (W === lastW && H === lastH && vw === lastVW && vh === lastVH && Math.abs(f - lastF) < 0.5) return;
+  lastW = W; lastH = H; lastVW = vw; lastVH = vh; lastF = f;
+  renderer.setSize(W, H, false);
+  const sc = Math.max(W / vw, H / vh), ox = (W - vw * sc) / 2, oy = (H - vh * sc) / 2;
+  const cx = vw / 2, cy = vh / 2, n = 0.05, fa = 60;
+  const a = 2 * sc * f / W, bx = 2 * (ox + cx * sc) / W - 1, c = 2 * sc * f / H, by = 1 - 2 * (oy + cy * sc) / H;
+  camera.projectionMatrix.set(
+    a, 0, -bx, 0,
+    0, c, -by, 0,
+    0, 0, -(fa + n) / (fa - n), -2 * fa * n / (fa - n),
+    0, 0, -1, 0);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+}
+
+// ---------- main loop ----------
+const proc = document.createElement('canvas');
+const pctx = proc.getContext('2d', { willReadFrequently: true });
+let current = null, lastSeen = -1e9, frames = 0, fpsT = performance.now(), fps = 0;
+const smoothPos = new THREE.Vector3(), smoothQuat = new THREE.Quaternion(), smoothScale = new THREE.Vector3();
+const tmpPos = new THREE.Vector3(), tmpQuat = new THREE.Quaternion(), tmpScale = new THREE.Vector3();
+const status = $('status');
+
+function loop(t) {
+  requestAnimationFrame(loop);
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh || video.readyState < 2) return;
+  updateProjection(vw, vh);
+  const k = Math.min(1, (+Q.get('proc') || CFG.procLongSide) / Math.max(vw, vh));
+  const pw = Math.round(vw * k), ph = Math.round(vh * k);
+  if (proc.width !== pw || proc.height !== ph) { proc.width = pw; proc.height = ph; }
+  pctx.drawImage(video, 0, 0, pw, ph);
+  const id = pctx.getImageData(0, 0, pw, ph).data;
+  const gray = new Uint8Array(pw * ph);
+  for (let i = 0, j = 0; j < gray.length; i += 4, j++) gray[j] = (id[i] * 77 + id[i + 1] * 150 + id[i + 2] * 29) >> 8;
+  const det = MarkerDetector.detect(gray, pw, ph).filter(m => OFF[m.id]);
+  // all visible markers lie on one floor plane -> one joint pose (much more stable than a single marker)
+  const obj = [], img = [];
+  for (const m of det) for (let i = 0; i < 4; i++) { obj.push(FLOOR[m.id][i]); img.push(m.corners[i]); }
+  if (det.length) {   // focal self-calibration (median of plausible estimates)
+    const fe = MarkerDetector.focalPlane(obj, img, pw / 2, ph / 2);
+    if (fe) { const u = fe / Math.max(pw, ph); if (u > 0.55 && u < 1.25) { fSamples.push(u); if (fSamples.length > 61) fSamples.shift(); } }
+  }
+  if (fSamples.length >= 9) { const s = [...fSamples].sort((a, b) => a - b); fUnits = s[s.length >> 1]; }
+  if (det.length) {
+    const f = (fOverride || fUnits) * Math.max(pw, ph);
+    const P = MarkerDetector.posePlane(obj, img, f, pw / 2, ph / 2);
+    if (P) {
+      const R = P.R, tt = P.t;
+      const Mcv = new THREE.Matrix4().set(R[0][0], R[0][1], R[0][2], tt[0], R[1][0], R[1][1], R[1][2], tt[1], R[2][0], R[2][1], R[2][2], tt[2], 0, 0, 0, 1);
+      const M = CV2GL.clone().multiply(Mcv).multiply(MODEL2FLOOR);
+      M.decompose(tmpPos, tmpQuat, tmpScale);
+      const ids = det.map(m => m.id).sort().join(',');
+      const fresh = t - lastSeen > CFG.hideAfterMs;
+      const al = ids === current ? 0.5 : 0.8;   // a newly seen marker set: follow quickly
+      if (fresh) { smoothPos.copy(tmpPos); smoothQuat.copy(tmpQuat); smoothScale.copy(tmpScale); }
+      else { smoothPos.lerp(tmpPos, al); smoothQuat.slerp(tmpQuat, al); smoothScale.lerp(tmpScale, al); }
+      anchor.matrix.compose(smoothPos, smoothQuat, smoothScale);
+      anchor.matrixWorldNeedsUpdate = true;
+      anchor.visible = modelReady;
+      current = ids; lastSeen = t;
+    }
+  } else if (t - lastSeen > CFG.hideAfterMs) { anchor.visible = false; current = null; }
+  renderer.render(scene, camera);
+  frames++; if (t - fpsT > 1000) { fps = frames * 1000 / (t - fpsT); frames = 0; fpsT = t; }
+  const seen = det.map(m => m.id).sort().join(', ');
+  status.innerHTML = (anchor.visible ? (det.length > 1 ? 'Markery <b>' : 'Marker <b>') + (seen || current) + '</b>' : 'Hledám marker…') + (TEST ? ' · TEST' : '') +
+    (DEBUG ? `<br><small>video ${vw}×${vh} · zpracování ${pw}×${ph} · ${fps.toFixed(0)} fps · ohnisko ${(fOverride || fUnits).toFixed(2)} (${fSamples.length}) · okno ${innerWidth}×${innerHeight}</small>` : '');
+}
+
+// ---------- buttons ----------
+$('btnCheck').addEventListener('click', e => { check.visible = !check.visible; e.currentTarget.classList.toggle('on', check.visible); });
+const btnFull = $('btnFull');
+btnFull.addEventListener('click', async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+      try { await screen.orientation.lock('portrait'); } catch (e) {}
+    } else await document.exitFullscreen();
+  } catch (e) { diag('celá obrazovka: ' + e.message, true); }
+});
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  btnFull.textContent = on ? 'Ukončit' : 'Celá obrazovka';
+  btnFull.classList.toggle('on', on);
+  lastW = 0;
+});
+addEventListener('resize', () => { lastW = 0; });
+if (!document.documentElement.requestFullscreen) btnFull.style.display = 'none';
+diag('verze 2 (vlastní detektor) · marker ' + (SIZE * 100).toFixed(0) + ' cm' + (TEST ? ' · TEST' : ''));
 </script>
 </body>
 </html>
