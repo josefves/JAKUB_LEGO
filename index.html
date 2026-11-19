@@ -37,7 +37,7 @@
   <div id="loadtxt">Načítám model vitríny…</div>
   <div id="bar"><i></i></div>
   <button id="go" type="button">Spustit kameru</button>
-  <small>Pak namiřte telefon na kterýkoli ze 4 černých markerů na podlaze – vitrína se objeví ve skutečné velikosti.</small>
+  <small>Pak namiřte telefon na černý marker na podlaze – vitrína se objeví ve skutečné velikosti. Držte se asi 1,5–3 m od markeru, aby byl celý v záběru.</small>
 </div>
 <div id="ui">
   <div id="status">Spouštím…</div>
@@ -50,17 +50,13 @@
 // ===================== NASTAVENÍ =====================
 // Souřadnice v metrech, počátek = střed půdorysu vitríny na podlaze.
 // Osa X = dlouhá strana vitríny (věž kostela je na straně -X), osa Z = krátká strana.
-// "dir" = kam míří horní okraj markeru (nápis „▲ MARKER n ▲“) – vždy k vitríně.
 window.CONFIG = {
-  markerSize: 0.50,          // šířka ČERNÉHO čtverce v m (tisk 60×60 cm)
-  testMarkerSize: 0.16,      // testovací tisk A4 (?test v adrese) – celá scéna se zmenší ve stejném poměru
+  // JEDEN marker leží uprostřed půdorysu vitríny (vitrína je virtuální, marker nezakrývá)
+  markerSize: 0.54,          // černý čtverec 54 cm (list 60×60 cm)
   markers: [
-    { id: 1, x:  0.00, z:  0.91, dir: [ 0, -1] },  // dlouhá strana, věž vlevo
-    { id: 2, x:  1.26, z:  0.00, dir: [-1,  0] },  // čelo bez věže
-    { id: 3, x:  0.00, z: -0.91, dir: [ 0,  1] },  // dlouhá strana, věž vpravo
-    { id: 4, x: -1.26, z:  0.00, dir: [ 1,  0] },  // čelo u věže
+    { id: 1, x: 0.00, z: 0.00, dir: [0, 1] },   // horní okraj (▲ MARKER ▲) míří k přední dlouhé straně
   ],
-  hideAfterMs: 400,          // jak dlouho model zůstane po ztrátě markeru
+  hideAfterMs: 500,          // jak dlouho model zůstane po ztrátě markeru
   procLongSide: 960,         // rozlišení pro hledání markerů (menší = rychlejší, ?proc=640)
   focalDefault: 0.75         // ohnisko jako násobek delší strany obrazu (doladí se samo)
 };
@@ -78,9 +74,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const CFG = window.CONFIG;
 const Q = new URLSearchParams(location.search);
-const TEST = Q.has('test'), DEBUG = Q.has('debug');
+const TEST = false, DEBUG = Q.has('debug');   // vždy skutečná velikost 1:1
 const OTOC = +(Q.get('otoc') || 0);
-const SIZE = TEST ? CFG.testMarkerSize : CFG.markerSize;
+const SIZE = CFG.markerSize;
 const S = SIZE / CFG.markerSize;
 const $ = id => document.getElementById(id);
 const diagEl = $('diag');
@@ -109,10 +105,10 @@ for (const m of CFG.markers) {
   g.position.set(m.x, 0.002, m.z);
   g.rotation.y = Math.atan2(-m.dir[0], -m.dir[1]) + OTOC * Math.PI / 180;
   const s = CFG.markerSize;
-  const sq = new THREE.Mesh(new THREE.PlaneGeometry(s, s), new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
-  sq.rotation.x = -Math.PI / 2; g.add(sq);
-  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.04, 20), new THREE.MeshBasicMaterial({ color: 0xff2d75, side: THREE.DoubleSide }));
-  dot.rotation.x = -Math.PI / 2; dot.position.set(0, 0.003, -s / 2 + 0.06); g.add(dot);
+  const sq = new THREE.Mesh(new THREE.PlaneGeometry(s, s), new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false, depthTest: false }));
+  sq.rotation.x = -Math.PI / 2; sq.renderOrder = 10; g.add(sq);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.04, 20), new THREE.MeshBasicMaterial({ color: 0xff2d75, side: THREE.DoubleSide, depthTest: false }));
+  dot.rotation.x = -Math.PI / 2; dot.position.set(0, 0.003, -s / 2 + 0.06); dot.renderOrder = 11; g.add(dot);
   check.add(g);
 }
 
@@ -265,7 +261,7 @@ document.addEventListener('fullscreenchange', () => {
 });
 addEventListener('resize', () => { lastW = 0; });
 if (!document.documentElement.requestFullscreen) btnFull.style.display = 'none';
-diag('verze 2 (vlastní detektor) · marker ' + (SIZE * 100).toFixed(0) + ' cm' + (TEST ? ' · TEST' : ''));
+diag('verze 3 · 1 marker · ' + (SIZE * 100).toFixed(0) + ' cm' + (TEST ? ' · TEST' : ''));
 </script>
 </body>
 </html>
